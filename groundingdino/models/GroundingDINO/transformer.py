@@ -547,21 +547,21 @@ class TransformerEncoder(nn.Module):
             #     if os.environ.get('IPDB_SHILONG_DEBUG', None) == 'INFO':
             #         import ipdb; ipdb.set_trace()
             if self.fusion_layers:
-                if self.use_checkpoint:
-                    output, memory_text = checkpoint.checkpoint(
-                        self.fusion_layers[layer_id],
-                        output,
-                        memory_text,
-                        key_padding_mask,
-                        text_attention_mask,
-                    )
-                else:
-                    output, memory_text = self.fusion_layers[layer_id](
-                        v=output,
-                        l=memory_text,
-                        attention_mask_v=key_padding_mask,
-                        attention_mask_l=text_attention_mask,
-                    )
+                # if self.use_checkpoint:
+                #     output, memory_text = checkpoint.checkpoint(
+                #         self.fusion_layers[layer_id],
+                #         output,
+                #         memory_text,
+                #         key_padding_mask,
+                #         text_attention_mask,
+                #     )
+                # else:
+                output, memory_text = self.fusion_layers[layer_id](
+                    v=output,
+                    l=memory_text,
+                    attention_mask_v=key_padding_mask,
+                    attention_mask_l=text_attention_mask,
+                )
 
             if self.text_layers:
                 memory_text = self.text_layers[layer_id](
@@ -572,25 +572,25 @@ class TransformerEncoder(nn.Module):
                 ).transpose(0, 1)
 
             # main process
-            if self.use_transformer_ckpt:
-                output = checkpoint.checkpoint(
-                    layer,
-                    output,
-                    pos,
-                    reference_points,
-                    spatial_shapes,
-                    level_start_index,
-                    key_padding_mask,
-                )
-            else:
-                output = layer(
-                    src=output,
-                    pos=pos,
-                    reference_points=reference_points,
-                    spatial_shapes=spatial_shapes,
-                    level_start_index=level_start_index,
-                    key_padding_mask=key_padding_mask,
-                )
+            # if self.use_transformer_ckpt:
+            #     output = checkpoint.checkpoint(
+            #         layer,
+            #         output,
+            #         pos,
+            #         reference_points,
+            #         spatial_shapes,
+            #         level_start_index,
+            #         key_padding_mask,
+            #     )
+            # else:
+            output = layer(
+                src=output,
+                pos=pos,
+                reference_points=reference_points,
+                spatial_shapes=spatial_shapes,
+                level_start_index=level_start_index,
+                key_padding_mask=key_padding_mask,
+            )
 
         return output, memory_text
 
