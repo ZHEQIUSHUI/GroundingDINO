@@ -210,6 +210,7 @@ class GroundingDINO(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         self.features, self.poss = self.backbone(samples)
+        # torch.onnx.export(self.backbone,samples.tensors,"weights/backbone.onnx",opset_version=11,input_names=["images"])
 
     def unset_image_tensor(self):
         if hasattr(self, 'features'):
@@ -275,8 +276,25 @@ class GroundingDINO(nn.Module):
             tokenized_for_encoder = tokenized
 
         bert_output = self.bert(**tokenized_for_encoder)  # bs, 195, 768
+        # print(tokenized_for_encoder)
+        # torch.onnx.export(self.bert,tokenized_for_encoder,"weights/bert.onnx",opset_version=11,
+        #                   input_names=["input_ids","attention_mask", "token_type_ids","position_ids"],
+        #                   output_names=["last_hidden_state","pooled_output"],
+        #                   dynamic_axes={
+        #                       "input_ids":[0,1],
+        #                       "attention_mask":[0,1,2], 
+        #                       "token_type_ids":[0,1],
+        #                       "position_ids":[0,1],
+        #                   })
 
         encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model
+
+        # torch.onnx.export(self.feat_map,bert_output["last_hidden_state"],"weights/feat_map.onnx",opset_version=11,
+        #                   input_names=["last_hidden_state"],
+        #                   dynamic_axes={
+        #                       "last_hidden_state":[0,1]
+        #                       })
+
         text_token_mask = tokenized.attention_mask.bool()  # bs, 195
         # text_token_mask: True for nomask, False for mask
         # text_self_attention_masks: True for nomask, False for mask
@@ -327,6 +345,11 @@ class GroundingDINO(nn.Module):
         hs, reference, hs_enc, ref_enc, init_box_proposal = self.transformer(
             srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, text_dict
         )
+
+        # torch.onnx.export(self.transformer,
+        #                   (srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks),
+        #                   "weights/transformer.onnx",opset_version=16,
+        #                   )
 
         # deformable-detr-like anchor update
         outputs_coord_list = []

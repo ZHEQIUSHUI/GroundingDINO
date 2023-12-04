@@ -148,7 +148,10 @@ class Joiner(nn.Sequential):
         super().__init__(backbone, position_embedding)
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
+        if torch.onnx.is_in_onnx_export():
+            return self[0].forward_raw(tensor_list)
+        else:
+            xs = self[0](tensor_list)
         out: List[NestedTensor] = []
         pos = []
         for name, x in xs.items():

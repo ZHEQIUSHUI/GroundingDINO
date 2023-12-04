@@ -444,10 +444,10 @@ class BasicLayer(nn.Module):
 
         for blk in self.blocks:
             blk.H, blk.W = H, W
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x, attn_mask)
-            else:
-                x = blk(x, attn_mask)
+            # if self.use_checkpoint:
+            #     x = checkpoint.checkpoint(blk, x, attn_mask)
+            # else:
+            x = blk(x, attn_mask)
         if self.downsample is not None:
             x_down = self.downsample(x, H, W)
             Wh, Ww = (H + 1) // 2, (W + 1) // 2
