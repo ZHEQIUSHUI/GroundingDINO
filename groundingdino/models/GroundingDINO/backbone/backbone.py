@@ -147,19 +147,27 @@ class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
 
-    def forward(self, tensor_list: NestedTensor):
-        if torch.onnx.is_in_onnx_export():
-            return self[0].forward_raw(tensor_list)
-        else:
-            xs = self[0](tensor_list)
-        out: List[NestedTensor] = []
+    def forward(self, tensor_list, mask):
+        # if torch.onnx.is_in_onnx_export():
+        outs = self[0].forward_raw(tensor_list)
+        masks = []
         pos = []
-        for name, x in xs.items():
-            out.append(x)
-            # position encoding
-            pos.append(self[1](x).to(x.tensors.dtype))
+        for idx, out_i in enumerate(outs):
+            m = mask
+            _mask = F.interpolate(m[None].float(), size=out_i.shape[-2:]).to(torch.bool)[0]
+            masks.append(_mask)
+            pos.append(self[1](out_i, _mask).to(out_i.dtype))
 
-        return out, pos
+        # else:
+        #     xs = self[0](tensor_list)
+        # out: List[NestedTensor] = []
+        # pos = []
+        # for name, x in xs.items():
+        #     out.append(x)
+        #     # position encoding
+        #     pos.append(self[1](x).to(x.tensors.dtype))
+
+        return outs, masks, pos
 
 
 def build_backbone(args):

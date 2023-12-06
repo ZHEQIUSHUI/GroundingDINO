@@ -7,6 +7,8 @@ TEXT_PROMPT = "chair . person . dog ."
 BOX_TRESHOLD = 0.35
 TEXT_TRESHOLD = 0.25
 
+model.move_op()
+
 image_source, image = load_image(IMAGE_PATH)
 
 boxes, logits, phrases = predict(

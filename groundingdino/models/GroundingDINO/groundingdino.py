@@ -209,7 +209,7 @@ class GroundingDINO(nn.Module):
     def set_image_tensor(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        self.features, self.poss = self.backbone(samples)
+        self.features, self.masks, self.poss = self.backbone(samples.tensors ,samples.mask)
         # torch.onnx.export(self.backbone,samples.tensors,"weights/backbone.onnx",opset_version=11,input_names=["images"])
 
     def unset_image_tensor(self):
@@ -224,6 +224,10 @@ class GroundingDINO(nn.Module):
 
     def init_ref_points(self, use_num_queries):
         self.refpoint_embed = nn.Embedding(use_num_queries, self.query_dim)
+    
+    def move_op(self):
+        self.bert.move_op(self.feat_map)
+        self.transformer.move_op(self.class_embed, self.bbox_embed)
 
     def forward(self, samples: NestedTensor, targets: List = None, **kw):
         """The forward expects a NestedTensor, which consists of:
@@ -287,7 +291,8 @@ class GroundingDINO(nn.Module):
         #                       "position_ids":[0,1],
         #                   })
 
-        encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model
+        # encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model
+        encoded_text = bert_output["last_hidden_state"] 
 
         # torch.onnx.export(self.feat_map,bert_output["last_hidden_state"],"weights/feat_map.onnx",opset_version=11,
         #                   input_names=["last_hidden_state"],
@@ -322,8 +327,8 @@ class GroundingDINO(nn.Module):
 
         srcs = []
         masks = []
-        for l, feat in enumerate(self.features):
-            src, mask = feat.decompose()
+        for l, feat in enumerate(zip(self.features, self.masks)):
+            src, mask = feat
             srcs.append(self.input_proj[l](src))
             masks.append(mask)
             assert mask is not None
@@ -331,20 +336,22 @@ class GroundingDINO(nn.Module):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
                 if l == _len_srcs:
-                    src = self.input_proj[l](self.features[-1].tensors)
+                    src = self.input_proj[l](self.features[-1])
                 else:
                     src = self.input_proj[l](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                pos_l = self.backbone[1](src, mask).to(src.dtype)
                 srcs.append(src)
                 masks.append(mask)
                 self.poss.append(pos_l)
 
         input_query_bbox = input_query_label = attn_mask = dn_meta = None
-        hs, reference, hs_enc, ref_enc, init_box_proposal = self.transformer(
-            srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, text_dict
+        outputs_class, outputs_coord_list = self.transformer(
+            srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks
         )
+
+        # text_dict["encoded_text"] = encoded_text_out
 
         # torch.onnx.export(self.transformer,
         #                   (srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks),
@@ -352,24 +359,24 @@ class GroundingDINO(nn.Module):
         #                   )
 
         # deformable-detr-like anchor update
-        outputs_coord_list = []
-        for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(
-            zip(reference[:-1], self.bbox_embed, hs)
-        ):
-            layer_delta_unsig = layer_bbox_embed(layer_hs)
-            layer_outputs_unsig = layer_delta_unsig + inverse_sigmoid(layer_ref_sig)
-            layer_outputs_unsig = layer_outputs_unsig.sigmoid()
-            outputs_coord_list.append(layer_outputs_unsig)
-        outputs_coord_list = torch.stack(outputs_coord_list)
+        # outputs_coord_list = []
+        # for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(
+        #     zip(reference[:-1], self.bbox_embed, hs)
+        # ):
+        #     layer_delta_unsig = layer_bbox_embed(layer_hs)
+        #     layer_outputs_unsig = layer_delta_unsig + inverse_sigmoid(layer_ref_sig)
+        #     layer_outputs_unsig = layer_outputs_unsig.sigmoid()
+        #     outputs_coord_list.append(layer_outputs_unsig)
+        # outputs_coord_list = torch.stack(outputs_coord_list)
 
         # output
-        outputs_class = torch.stack(
-            [
-                layer_cls_embed(layer_hs, text_dict)
-                for layer_cls_embed, layer_hs in zip(self.class_embed, hs)
-            ]
-        )
-        out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord_list[-1]}
+        # outputs_class = torch.stack(
+        #     [
+        #         layer_cls_embed(layer_hs, text_dict)
+        #         for layer_cls_embed, layer_hs in zip(self.class_embed, hs)
+        #     ]
+        # )
+        out = {"pred_logits": outputs_class[-1].sigmoid(), "pred_boxes": outputs_coord_list[-1]}
 
         # # for intermediate outputs
         # if self.aux_loss:

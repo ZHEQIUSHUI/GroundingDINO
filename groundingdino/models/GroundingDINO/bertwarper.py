@@ -28,6 +28,9 @@ class BertModelWarper(nn.Module):
         self.invert_attention_mask = bert_model.invert_attention_mask
         self.get_head_mask = bert_model.get_head_mask
 
+    def move_op(self,feat_map):
+        self.feat_map = feat_map
+
     def forward(
         self,
         input_ids=None,
@@ -157,7 +160,7 @@ class BertModelWarper(nn.Module):
             return (sequence_output, pooled_output) + encoder_outputs[1:]
 
         return BaseModelOutputWithPoolingAndCrossAttentions(
-            last_hidden_state=sequence_output,
+            last_hidden_state=self.feat_map(sequence_output),
             pooler_output=pooled_output,
             past_key_values=encoder_outputs.past_key_values,
             hidden_states=encoder_outputs.hidden_states,

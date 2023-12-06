@@ -208,7 +208,11 @@ class Transformer(nn.Module):
     def init_ref_points(self, use_num_queries):
         self.refpoint_embed = nn.Embedding(use_num_queries, 4)
 
-    def forward(self, srcs, masks, refpoint_embed, pos_embeds, tgt, attn_mask=None, text_dict=None):
+    def move_op(self,class_embed, bbox_embed):
+        self.class_embed = class_embed
+        self.bbox_embed = bbox_embed
+
+    def forward(self, srcs, masks, refpoint_embed, pos_embeds, tgt, attn_mask=None, encoded_text=None, text_token_mask=None, position_ids=None, text_self_attention_masks=None):
         """
         Input:
             - srcs: List of multi features [bs, ci, hi, wi]
@@ -250,7 +254,7 @@ class Transformer(nn.Module):
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         # two stage
-        enc_topk_proposals = enc_refpoint_embed = None
+        # enc_topk_proposals = enc_refpoint_embed = None
 
         #########################################################
         # Begin Encoder
@@ -262,11 +266,11 @@ class Transformer(nn.Module):
             spatial_shapes=spatial_shapes,
             valid_ratios=valid_ratios,
             key_padding_mask=mask_flatten,
-            memory_text=text_dict["encoded_text"],
-            text_attention_mask=~text_dict["text_token_mask"],
+            memory_text=encoded_text,
+            text_attention_mask=~text_token_mask,
             # we ~ the mask . False means use the token; True means pad the token
-            position_ids=text_dict["position_ids"],
-            text_self_attention_masks=text_dict["text_self_attention_masks"],
+            position_ids=position_ids,
+            text_self_attention_masks=text_self_attention_masks,
         )
         #########################################################
         # End Encoder
@@ -276,7 +280,7 @@ class Transformer(nn.Module):
         # - enc_intermediate_output: None or (nenc+1, bs, nq, c) or (nenc, bs, nq, c)
         # - enc_intermediate_refpoints: None or (nenc+1, bs, nq, c) or (nenc, bs, nq, c)
         #########################################################
-        text_dict["encoded_text"] = memory_text
+        encoded_text = memory_text
         # if os.environ.get("SHILONG_AMP_INFNAN_DEBUG") == '1':
         #     if memory.isnan().any() | memory.isinf().any():
         #         import ipdb; ipdb.set_trace()
@@ -287,7 +291,13 @@ class Transformer(nn.Module):
             )
             output_memory = self.enc_output_norm(self.enc_output(output_memory))
 
-            if text_dict is not None:
+            if encoded_text is not None:
+                text_dict = {
+                    "encoded_text": encoded_text,  # bs, 195, d_model
+                    "text_token_mask": text_token_mask,  # bs, 195
+                    "position_ids": position_ids,  # bs, 195
+                    "text_self_attention_masks": text_self_attention_masks,  # bs, 195,195
+                }
                 enc_outputs_class_unselected = self.enc_out_class_embed(output_memory, text_dict)
             else:
                 enc_outputs_class_unselected = self.enc_out_class_embed(output_memory)
@@ -305,9 +315,9 @@ class Transformer(nn.Module):
                 enc_outputs_coord_unselected, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)
             )  # unsigmoid
             refpoint_embed_ = refpoint_embed_undetach.detach()
-            init_box_proposal = torch.gather(
-                output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)
-            ).sigmoid()  # sigmoid
+            # init_box_proposal = torch.gather(
+            #     output_proposals, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4)
+            # ).sigmoid()  # sigmoid
 
             # gather tgt
             tgt_undetach = torch.gather(
@@ -348,7 +358,7 @@ class Transformer(nn.Module):
                 )  # 1, n_q*n_pat, d_model
                 tgt = tgt_embed + tgt_pat
 
-            init_box_proposal = refpoint_embed_.sigmoid()
+            # init_box_proposal = refpoint_embed_.sigmoid()
 
         else:
             raise NotImplementedError("unknown two_stage_type {}".format(self.two_stage_type))
@@ -371,8 +381,8 @@ class Transformer(nn.Module):
             spatial_shapes=spatial_shapes,
             valid_ratios=valid_ratios,
             tgt_mask=attn_mask,
-            memory_text=text_dict["encoded_text"],
-            text_attention_mask=~text_dict["text_token_mask"],
+            memory_text=encoded_text,
+            text_attention_mask=~text_token_mask,
             # we ~ the mask . False means use the token; True means pad the token
         )
         #########################################################
@@ -384,18 +394,36 @@ class Transformer(nn.Module):
         #########################################################
         # Begin postprocess
         #########################################################
-        if self.two_stage_type == "standard":
-            hs_enc = tgt_undetach.unsqueeze(0)
-            ref_enc = refpoint_embed_undetach.sigmoid().unsqueeze(0)
-        else:
-            hs_enc = ref_enc = None
+        # if self.two_stage_type == "standard":
+        #     hs_enc = tgt_undetach.unsqueeze(0)
+        #     ref_enc = refpoint_embed_undetach.sigmoid().unsqueeze(0)
+        # else:
+        #     hs_enc = ref_enc = None
         #########################################################
         # End postprocess
         # hs_enc: (n_enc+1, bs, nq, d_model) or (1, bs, nq, d_model) or (n_enc, bs, nq, d_model) or None
         # ref_enc: (n_enc+1, bs, nq, query_dim) or (1, bs, nq, query_dim) or (n_enc, bs, nq, d_model) or None
         #########################################################
 
-        return hs, references, hs_enc, ref_enc, init_box_proposal
+        outputs_class = torch.stack(
+            [
+                layer_cls_embed(layer_hs, text_dict)
+                for layer_cls_embed, layer_hs in zip(self.class_embed, hs)
+            ]
+        )
+
+        outputs_coord_list = []
+        for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(
+            zip(references[:-1], self.bbox_embed, hs)
+        ):
+            layer_delta_unsig = layer_bbox_embed(layer_hs)
+            layer_outputs_unsig = layer_delta_unsig + inverse_sigmoid(layer_ref_sig)
+            layer_outputs_unsig = layer_outputs_unsig.sigmoid()
+            outputs_coord_list.append(layer_outputs_unsig)
+        outputs_coord_list = torch.stack(outputs_coord_list)
+
+        # return outputs_class, references, hs_enc, ref_enc, init_box_proposal, encoded_text
+        return outputs_class, outputs_coord_list
         # hs: (n_dec, bs, nq, d_model)
         # references: sigmoid coordinates. (n_dec+1, bs, bq, 4)
         # hs_enc: (n_enc+1, bs, nq, d_model) or (1, bs, nq, d_model) or None
