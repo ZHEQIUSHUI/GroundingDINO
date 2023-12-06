@@ -209,7 +209,7 @@ class GroundingDINO(nn.Module):
     def set_image_tensor(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        self.features, self.masks, self.poss = self.backbone(samples.tensors ,samples.mask)
+        self.srcs, self.masks, self.poss = self.backbone(samples.tensors)
         # torch.onnx.export(self.backbone,samples.tensors,"weights/backbone.onnx",opset_version=11,input_names=["images"])
 
     def unset_image_tensor(self):
@@ -228,6 +228,7 @@ class GroundingDINO(nn.Module):
     def move_op(self):
         self.bert.move_op(self.feat_map)
         self.transformer.move_op(self.class_embed, self.bbox_embed)
+        self.backbone.move_op(self.input_proj,self.num_feature_levels)
 
     def forward(self, samples: NestedTensor, targets: List = None, **kw):
         """The forward expects a NestedTensor, which consists of:
@@ -325,30 +326,30 @@ class GroundingDINO(nn.Module):
         if not hasattr(self, 'features') or not hasattr(self, 'poss'):
             self.set_image_tensor(samples)
 
-        srcs = []
-        masks = []
-        for l, feat in enumerate(zip(self.features, self.masks)):
-            src, mask = feat
-            srcs.append(self.input_proj[l](src))
-            masks.append(mask)
-            assert mask is not None
-        if self.num_feature_levels > len(srcs):
-            _len_srcs = len(srcs)
-            for l in range(_len_srcs, self.num_feature_levels):
-                if l == _len_srcs:
-                    src = self.input_proj[l](self.features[-1])
-                else:
-                    src = self.input_proj[l](srcs[-1])
-                m = samples.mask
-                mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](src, mask).to(src.dtype)
-                srcs.append(src)
-                masks.append(mask)
-                self.poss.append(pos_l)
+        # srcs = []
+        # masks = []
+        # for l, feat in enumerate(zip(self.features, self.masks)):
+        #     src, mask = feat
+        #     srcs.append(self.input_proj[l](src))
+        #     masks.append(mask)
+        #     assert mask is not None
+        # if self.num_feature_levels > len(srcs):
+        #     _len_srcs = len(srcs)
+        #     for l in range(_len_srcs, self.num_feature_levels):
+        #         if l == _len_srcs:
+        #             src = self.input_proj[l](self.features[-1])
+        #         else:
+        #             src = self.input_proj[l](srcs[-1])
+        #         m = samples.mask
+        #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+        #         pos_l = self.backbone[1](src).to(src.dtype)
+        #         srcs.append(src)
+        #         masks.append(mask)
+        #         self.poss.append(pos_l)
 
         input_query_bbox = input_query_label = attn_mask = dn_meta = None
         outputs_class, outputs_coord_list = self.transformer(
-            srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks
+            self.srcs, self.masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks
         )
 
         # text_dict["encoded_text"] = encoded_text_out

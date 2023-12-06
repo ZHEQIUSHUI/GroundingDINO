@@ -95,9 +95,13 @@ class PositionEmbeddingSineHW(nn.Module):
             scale = 2 * math.pi
         self.scale = scale
 
-    def forward(self, x, mask):
+    def forward(self, x):
+
+        b,c,h,w = x.shape
+        not_mask = torch.ones((b, h, w), dtype=torch.bool, device=x.device)
+        not_mask[:b,:h,:w] = True
         
-        not_mask = ~mask
+        # not_mask = ~mask
         y_embed = not_mask.cumsum(1, dtype=torch.float32)
         x_embed = not_mask.cumsum(2, dtype=torch.float32)
 
