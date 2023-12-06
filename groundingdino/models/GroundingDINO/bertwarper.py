@@ -35,17 +35,7 @@ class BertModelWarper(nn.Module):
         self,
         input_ids=None,
         attention_mask=None,
-        token_type_ids=None,
         position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        past_key_values=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
     ):
         r"""
         encoder_hidden_states  (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
@@ -67,6 +57,17 @@ class BertModelWarper(nn.Module):
             If set to :obj:`True`, :obj:`past_key_values` key value states are returned and can be used to speed up
             decoding (see :obj:`past_key_values`).
         """
+        token_type_ids = None
+        head_mask=None
+        inputs_embeds=None
+        encoder_hidden_states=None
+        encoder_attention_mask=None
+        past_key_values=None
+        use_cache=None
+        output_attentions=None
+        output_hidden_states=None
+        return_dict=None
+
         output_attentions = (
             output_attentions if output_attentions is not None else self.config.output_attentions
         )
@@ -159,14 +160,8 @@ class BertModelWarper(nn.Module):
         if not return_dict:
             return (sequence_output, pooled_output) + encoder_outputs[1:]
 
-        return BaseModelOutputWithPoolingAndCrossAttentions(
-            last_hidden_state=self.feat_map(sequence_output),
-            pooler_output=pooled_output,
-            past_key_values=encoder_outputs.past_key_values,
-            hidden_states=encoder_outputs.hidden_states,
-            attentions=encoder_outputs.attentions,
-            cross_attentions=encoder_outputs.cross_attentions,
-        )
+        return self.feat_map(sequence_output)
+
 
 
 class TextEncoderShell(nn.Module):

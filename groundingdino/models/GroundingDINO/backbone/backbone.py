@@ -146,48 +146,30 @@ class Backbone(BackboneBase):
 class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
+        self.position_embedding = position_embedding
+        self.backbone = backbone
 
     def move_op(self,input_proj,num_feature_levels):
         self.input_proj = input_proj
         self.num_feature_levels = num_feature_levels
 
     def forward(self, tensor_list):
-        b,c,h,w = tensor_list.shape
-        mask = torch.ones((b, h, w), dtype=torch.bool, device=tensor_list.device)
-        mask[:b,:h,:w] = False
-        # if torch.onnx.is_in_onnx_export():
-        features = self[0].forward_raw(tensor_list)
-        masks = []
-        pos = []
+        features = self.backbone.forward_raw(tensor_list)
+        poss = []
         srcs = []
         for idx, out_i in enumerate(features):
-            _mask = F.interpolate(mask[None].float(), size=out_i.shape[-2:]).to(torch.bool)[0]
-            masks.append(_mask)
-            pos.append(self[1](out_i).to(out_i.dtype))
+            poss.append(self.position_embedding(out_i).to(out_i.dtype))
             srcs.append(self.input_proj[idx](out_i))
 
-        _len_srcs = len(srcs)
-        for l in range(_len_srcs, self.num_feature_levels):
-            if l == _len_srcs:
-                src = self.input_proj[l](features[-1])
-            else:
-                src = self.input_proj[l](srcs[-1])
-            mask = F.interpolate(mask[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-            pos_l = self[1](src).to(src.dtype)
-            srcs.append(src)
-            masks.append(mask)
-            pos.append(pos_l)
+        src = self.input_proj[-1](features[-1])
+        srcs.append(src)
+        poss.append(self.position_embedding(src).to(src.dtype))
 
-        # else:
-        #     xs = self[0](tensor_list)
-        # out: List[NestedTensor] = []
-        # pos = []
-        # for name, x in xs.items():
-        #     out.append(x)
-        #     # position encoding
-        #     pos.append(self[1](x).to(x.tensors.dtype))
+        merges = []
+        for src,pos in zip(srcs,poss):
+            merges.append(torch.cat((src,pos),1))
 
-        return srcs, masks, pos
+        return merges
 
 
 def build_backbone(args):

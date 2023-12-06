@@ -84,6 +84,7 @@ class GroundingDINO(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
         """
         super().__init__()
+        self.is_export = False
         self.num_queries = num_queries
         self.transformer = transformer
         self.hidden_dim = hidden_dim = transformer.d_model
@@ -209,8 +210,12 @@ class GroundingDINO(nn.Module):
     def set_image_tensor(self, samples: NestedTensor):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        self.srcs, self.masks, self.poss = self.backbone(samples.tensors)
-        # torch.onnx.export(self.backbone,samples.tensors,"weights/backbone.onnx",opset_version=11,input_names=["images"])
+        self.srcs = self.backbone(samples.tensors)
+        print(len(self.srcs))
+        for s in self.srcs:
+            print(s.shape)
+        if self.is_export:
+           torch.onnx.export(self.backbone,samples.tensors,"weights/backbone.onnx",opset_version=11,input_names=["images"])
 
     def unset_image_tensor(self):
         if hasattr(self, 'features'):
@@ -224,6 +229,9 @@ class GroundingDINO(nn.Module):
 
     def init_ref_points(self, use_num_queries):
         self.refpoint_embed = nn.Embedding(use_num_queries, self.query_dim)
+
+    def export_onnx_enable(self, is_export):
+        self.is_export = is_export
     
     def move_op(self):
         self.bert.move_op(self.feat_map)
@@ -280,20 +288,22 @@ class GroundingDINO(nn.Module):
             # import ipdb; ipdb.set_trace()
             tokenized_for_encoder = tokenized
 
-        bert_output = self.bert(**tokenized_for_encoder)  # bs, 195, 768
+        encoded_text = self.bert(input_ids = tokenized_for_encoder["input_ids"],attention_mask = tokenized_for_encoder["attention_mask"] ,position_ids = tokenized_for_encoder["position_ids"])  # bs, 195, 768
+        # encoded_text = self.bert(**tokenized_for_encoder)  # bs, 195, 768
         # print(tokenized_for_encoder)
-        # torch.onnx.export(self.bert,tokenized_for_encoder,"weights/bert.onnx",opset_version=11,
-        #                   input_names=["input_ids","attention_mask", "token_type_ids","position_ids"],
-        #                   output_names=["last_hidden_state","pooled_output"],
-        #                   dynamic_axes={
-        #                       "input_ids":[0,1],
-        #                       "attention_mask":[0,1,2], 
-        #                       "token_type_ids":[0,1],
-        #                       "position_ids":[0,1],
-        #                   })
+        # print(encoded_text.shape)
+        if self.is_export:
+            torch.onnx.export(self.bert,(tokenized_for_encoder["input_ids"], tokenized_for_encoder["attention_mask"] , tokenized_for_encoder["position_ids"]),"weights/bert.onnx",opset_version=11,
+                            input_names=["input_ids", "attention_mask", "position_ids"],
+                            output_names=["encoded_text"],
+                            dynamic_axes={
+                                "input_ids":[0,1],
+                                "attention_mask":[0,1,2], 
+                                "position_ids":[0,1],
+                            })
 
         # encoded_text = self.feat_map(bert_output["last_hidden_state"])  # bs, 195, d_model
-        encoded_text = bert_output["last_hidden_state"] 
+        # encoded_text = bert_output["last_hidden_state"] 
 
         # torch.onnx.export(self.feat_map,bert_output["last_hidden_state"],"weights/feat_map.onnx",opset_version=11,
         #                   input_names=["last_hidden_state"],
@@ -301,24 +311,26 @@ class GroundingDINO(nn.Module):
         #                       "last_hidden_state":[0,1]
         #                       })
 
-        text_token_mask = tokenized.attention_mask.bool()  # bs, 195
+        # text_token_mask = tokenized.attention_mask.bool()  # bs, 195
         # text_token_mask: True for nomask, False for mask
         # text_self_attention_masks: True for nomask, False for mask
 
-        if encoded_text.shape[1] > self.max_text_len:
-            encoded_text = encoded_text[:, : self.max_text_len, :]
-            text_token_mask = text_token_mask[:, : self.max_text_len]
-            position_ids = position_ids[:, : self.max_text_len]
-            text_self_attention_masks = text_self_attention_masks[
-                :, : self.max_text_len, : self.max_text_len
-            ]
+        # if encoded_text.shape[1] > self.max_text_len:
+        #     encoded_text = encoded_text[:, : self.max_text_len, :]
+        #     text_token_mask = text_token_mask[:, : self.max_text_len]
+        #     position_ids = position_ids[:, : self.max_text_len]
+        #     text_self_attention_masks = text_self_attention_masks[
+        #         :, : self.max_text_len, : self.max_text_len
+        #     ]
 
-        text_dict = {
-            "encoded_text": encoded_text,  # bs, 195, d_model
-            "text_token_mask": text_token_mask,  # bs, 195
-            "position_ids": position_ids,  # bs, 195
-            "text_self_attention_masks": text_self_attention_masks,  # bs, 195,195
-        }
+        # text_dict = {
+        #     "encoded_text": encoded_text,  # bs, 195, d_model
+        #     "text_token_mask": text_token_mask,  # bs, 195
+        #     "position_ids": position_ids,  # bs, 195
+        #     "text_self_attention_masks": text_self_attention_masks,  # bs, 195,195
+        # }
+
+        # print(text_dict)
 
         # import ipdb; ipdb.set_trace()
         if isinstance(samples, (list, torch.Tensor)):
@@ -326,73 +338,26 @@ class GroundingDINO(nn.Module):
         if not hasattr(self, 'features') or not hasattr(self, 'poss'):
             self.set_image_tensor(samples)
 
-        # srcs = []
-        # masks = []
-        # for l, feat in enumerate(zip(self.features, self.masks)):
-        #     src, mask = feat
-        #     srcs.append(self.input_proj[l](src))
-        #     masks.append(mask)
-        #     assert mask is not None
-        # if self.num_feature_levels > len(srcs):
-        #     _len_srcs = len(srcs)
-        #     for l in range(_len_srcs, self.num_feature_levels):
-        #         if l == _len_srcs:
-        #             src = self.input_proj[l](self.features[-1])
-        #         else:
-        #             src = self.input_proj[l](srcs[-1])
-        #         m = samples.mask
-        #         mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-        #         pos_l = self.backbone[1](src).to(src.dtype)
-        #         srcs.append(src)
-        #         masks.append(mask)
-        #         self.poss.append(pos_l)
-
-        input_query_bbox = input_query_label = attn_mask = dn_meta = None
         outputs_class, outputs_coord_list = self.transformer(
-            self.srcs, self.masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks
+            self.srcs, encoded_text, position_ids, text_self_attention_masks
         )
 
         # text_dict["encoded_text"] = encoded_text_out
+        if self.is_export:
+            torch.onnx.export(self.transformer,
+                            (self.srcs, encoded_text,  position_ids, text_self_attention_masks),
+                            "weights/transformer.onnx",opset_version=16,
+                            output_names=["outputs_class","outputs_coord_list"],
+                            input_names=["src0","src1","src2","src3","encoded_text", "position_ids", "text_self_attention_masks"],
+                            dynamic_axes={
+                                "encoded_text":[0,1],
+                                "position_ids":[0,1],
+                                "text_self_attention_masks":[0,1,2],
+                            })
 
-        # torch.onnx.export(self.transformer,
-        #                   (srcs, masks, input_query_bbox, self.poss, input_query_label, attn_mask, encoded_text,text_token_mask,position_ids,text_self_attention_masks),
-        #                   "weights/transformer.onnx",opset_version=16,
-        #                   )
+      
+        out = {"pred_logits": outputs_class[-1], "pred_boxes": outputs_coord_list[-1]}
 
-        # deformable-detr-like anchor update
-        # outputs_coord_list = []
-        # for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(
-        #     zip(reference[:-1], self.bbox_embed, hs)
-        # ):
-        #     layer_delta_unsig = layer_bbox_embed(layer_hs)
-        #     layer_outputs_unsig = layer_delta_unsig + inverse_sigmoid(layer_ref_sig)
-        #     layer_outputs_unsig = layer_outputs_unsig.sigmoid()
-        #     outputs_coord_list.append(layer_outputs_unsig)
-        # outputs_coord_list = torch.stack(outputs_coord_list)
-
-        # output
-        # outputs_class = torch.stack(
-        #     [
-        #         layer_cls_embed(layer_hs, text_dict)
-        #         for layer_cls_embed, layer_hs in zip(self.class_embed, hs)
-        #     ]
-        # )
-        out = {"pred_logits": outputs_class[-1].sigmoid(), "pred_boxes": outputs_coord_list[-1]}
-
-        # # for intermediate outputs
-        # if self.aux_loss:
-        #     out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord_list)
-
-        # # for encoder output
-        # if hs_enc is not None:
-        #     # prepare intermediate outputs
-        #     interm_coord = ref_enc[-1]
-        #     interm_class = self.transformer.enc_out_class_embed(hs_enc[-1], text_dict)
-        #     out['interm_outputs'] = {'pred_logits': interm_class, 'pred_boxes': interm_coord}
-        #     out['interm_outputs_for_matching_pre'] = {'pred_logits': interm_class, 'pred_boxes': init_box_proposal}
-        unset_image_tensor = kw.get('unset_image_tensor', True)
-        if unset_image_tensor:
-            self.unset_image_tensor() ## If necessary
         return out
 
     @torch.jit.unused

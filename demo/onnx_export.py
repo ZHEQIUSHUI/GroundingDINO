@@ -9,6 +9,9 @@ TEXT_TRESHOLD = 0.25
 
 model.move_op()
 
+# 导出 onnx
+# model.export_onnx_enable(True)
+
 image_source, image = load_image(IMAGE_PATH)
 
 boxes, logits, phrases = predict(

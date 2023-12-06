@@ -212,7 +212,7 @@ class Transformer(nn.Module):
         self.class_embed = class_embed
         self.bbox_embed = bbox_embed
 
-    def forward(self, srcs, masks, refpoint_embed, pos_embeds, tgt, attn_mask=None, encoded_text=None, text_token_mask=None, position_ids=None, text_self_attention_masks=None):
+    def forward(self, srcs, encoded_text=None, position_ids=None, text_self_attention_masks=None):
         """
         Input:
             - srcs: List of multi features [bs, ci, hi, wi]
@@ -223,12 +223,25 @@ class Transformer(nn.Module):
 
         """
         # prepare input for encoder
+        _bs,_len = position_ids.shape
+        text_token_mask = torch.ones((_bs,_len),device=position_ids.device).bool()
+        # print(text_token_mask)
+
+        refpoint_embed = tgt = attn_mask=None
         src_flatten = []
         mask_flatten = []
         lvl_pos_embed_flatten = []
         spatial_shapes = []
-        for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):
-            bs, c, h, w = src.shape
+        masks = []
+        for lvl, _src in enumerate(srcs):
+            bs, c, h, w = _src.shape
+            src = _src[:,:int(c/2),:,:]
+            pos_embed = _src[:,int(c/2):,:,:]
+
+            mask = torch.ones((bs, h, w), dtype=torch.bool, device=src.device)
+            mask[:bs,:h,:w] = False
+            masks.append(mask)
+
             spatial_shape = (h, w)
             spatial_shapes.append(spatial_shape)
 
@@ -423,7 +436,7 @@ class Transformer(nn.Module):
         outputs_coord_list = torch.stack(outputs_coord_list)
 
         # return outputs_class, references, hs_enc, ref_enc, init_box_proposal, encoded_text
-        return outputs_class, outputs_coord_list
+        return outputs_class.sigmoid(), outputs_coord_list
         # hs: (n_dec, bs, nq, d_model)
         # references: sigmoid coordinates. (n_dec+1, bs, bq, 4)
         # hs_enc: (n_enc+1, bs, nq, d_model) or (1, bs, nq, d_model) or None
